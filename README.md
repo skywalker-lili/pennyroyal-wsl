@@ -8,7 +8,7 @@ It was run against one pinned image, not against upstream `latest` and not again
 
 Upstream documents that release as `pennyroyal-v2.5.1` and the tag `ghcr.io/jpezzulli/sglang-rtxpro6000:v2.5.1`. Pull the digest above. Do not assume the tag still points at this digest.
 
-The WSL run that these files describe used a 250,000-token context and a 12 GiB host cache. That is a smaller profile than upstream's 524,288-token / 32 GiB HiCache recipe. A 490,000-token prompt failed on the WSL machine these notes came from. That does not say the upstream long-context recipe is wrong on bare metal.
+The WSL run that these files describe used a 250,000-token context and a 12 GiB host cache. That is a smaller profile than upstream's 524,288-token / 32 GiB HiCache recipe. Speed numbers and the machine they were measured on are in [Measured on one machine](#measured-on-one-machine). A 490,000-token prompt failed on that machine. That does not say the upstream long-context recipe is wrong on bare metal.
 
 No path in this repository is a machine path. The checkout can live on any drive. Weights and caches cannot.
 
@@ -136,6 +136,59 @@ The `.patch` files are the functional diff against the image. They do not includ
 - `overlays/` — files mounted into the pinned image
 - `paths.example.jsonc` — copy to `paths.jsonc` and fill in
 - `reports/` — notes from one WSL machine. Not setup instructions
+
+## Measured on one machine
+
+These numbers are from one Windows WSL2 host. They are not a claim about bare-metal Pennyroyal, and they are not a significance test. Three rounds per tier is a small sample.
+
+Hardware, as reported on that host:
+
+- Windows 11 Pro, WSL2, Ubuntu 26.04
+- AMD Ryzen 7 9700X, 8 cores / 16 threads
+- 61.6 GiB physical memory, as Windows reported it
+- NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition
+- `nvidia-smi` inside WSL: 97887 MiB, driver 596.72
+
+No hostname, account, or disk path belongs in this section.
+
+### 250K profile
+
+This is the server the speed table ran against. It is `configs/default.jsonc` plus `overlays/serve-flash-next.sh`. Editing the JSON without the matching shell line does not change the server.
+
+- Image: `ghcr.io/jpezzulli/sglang-rtxpro6000@sha256:76258532b1c01f7583fbe951f90b80903db931030291db9db4e5a68b28567866`
+- Entrypoint profile: `next-plain`. FR-Spec off. Online FP8 off.
+- Context: 250000, native RoPE, empty model overrides. The checkpoint's original max position is 262144, so this profile does not use YaRN.
+- Scheduler: `MAX_TOTAL_TOKENS` 300032, `max_running_requests` 4, `max_mamba_cache_size` 24
+- Container: 28 GiB cgroup cap, `memory.swap.max=0`, `--shm-size` 4g
+- GPU: `--mem-fraction-static` 0.94, tensor parallel 1, page size 64, chunked prefill 4096
+- Weights: ModelOpt NVFP4 (`modelopt_fp4`), compute bfloat16, KV `fp8_e4m3`
+- Mamba: SSM and conv bfloat16, track interval 64, radix strategy `extra_buffer`, `gdn-mtp-cache-mode` none
+- Linear attention: FlashInfer for decode and prefill
+- HiCache: 12 GiB, host mode `cache`, `write_through`, kernel IO, `page_first`, NIXL backend, prefetch `timeout`
+- NIXL: buffered POSIX. `use_direct_io` false. O_DIRECT was the slower path on this host.
+- PLE: NVMe FP8 table, not the RAM-backed table
+- Allocator: the torch-pinned overlay in `overlays/common.py`. `SGLANG_HICACHE_TORCH_PINNED_ALLOC=1`
+- Build jobs inside the container: 2
+- Served name: `qwen3.8-flash-next-pennyroyal`
+
+Protocol for the table: one 1024-token warmup, then 12 formal requests. Each of 32K, 64K, 128K, and 248K ran 3 serial rounds, 512 output tokens, temperature 0.6, top_p 0.95, seed 42 plus the trial index, thinking off, `ignore_eos`. Cache hits were 0. TTFT is submit to the first non-empty text. Decode is client-side `(completion_tokens - 1) / (elapsed - TTFT)`. Prefill tok/s uses the server's prefill-forward stage. Values are medians.
+
+| Input tokens | TTFT s | Prefill tok/s | Decode tok/s (range) |
+|---:|---:|---:|---:|
+| 32,768 | 3.053 | 11471 | 128.2 (124.7–131.9) |
+| 65,536 | 6.029 | 11345 | 125.3 (125.1–130.9) |
+| 131,072 | 12.547 | 10831 | 118.4 (81.8–120.6) |
+| 248,000 | 26.255 | 9739 | 119.6 (79.1–133.0) |
+
+One 128K round decoded at 81.8 tok/s, and one 248K round at 79.1. Do not read the medians as a stable rate above 120.
+
+An older Primitive run on this same host, not re-run for this patch, had decode medians of 115.4 / 125.0 / 115.8 / 114.2 tok/s at those four lengths. That is a historical baseline, not a paired comparison.
+
+The lab note is `reports/20260924-context-speed.md`. Raw result files are not in this repository.
+
+### 524K profile
+
+Not the default. A separate server was booted at context-length 524288, YaRN factor 2.0, the same 12 GiB HiCache and 28 GiB container cap. It started, and a 384K-token prompt completed a short smoke request (128 output tokens, one cold pass and one warm cache hit). A 490K prompt did not finish. That is not a daily configuration, and it is not evidence that upstream's long-context recipe fails on bare metal.
 
 ## License
 
