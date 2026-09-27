@@ -1,0 +1,32 @@
+// Daily profile. start-service.ps1 loads this when -Config is omitted.
+// Disk paths are not in this file. They live in paths.jsonc, which is not committed.
+// context must match CONTEXT_LENGTH in launcher. Editing context here does not edit the shell script.
+{
+  "description": "Daily WSL profile. Native RoPE, 250000 context, 12GiB HiCache, NVMe PLE, FR-Spec off.",
+
+  "image": "ghcr.io/jpezzulli/sglang-rtxpro6000@sha256:76258532b1c01f7583fbe951f90b80903db931030291db9db4e5a68b28567866",
+
+  "launcher": "serve-flash-next.sh",
+
+  // Container cgroup cap. The start script also sets memory.swap.max=0, so this is a hard ceiling.
+  // 12GiB failed the Windows RAM guard or the 200K restore. 28GiB is the size that passed.
+  "memory_gib": 28,
+
+  // Must match CONTEXT_LENGTH in the launcher. 262144 is the checkpoint's original max position,
+  // so 250000 does not need YaRN. 384000 prompts passed only on a separate 524288 YaRN server.
+  "context": 250000,
+
+  // Scheduler budget, including decode headroom. 250000 + 50032. Passed as MAX_TOTAL_TOKENS.
+  "max_total_tokens": 300032,
+
+  "max_running_requests": 4,
+
+  "max_mamba_cache_size": 24,
+
+  // WSL compile parallelism. Upstream's public default is 4. 2 is what this machine used.
+  "penny_build_jobs": 2,
+
+  "served_model_name": "qwen3.8-flash-next-pennyroyal",
+
+  "startup_timeout_seconds": 1800
+}

@@ -1,0 +1,22 @@
+{
+  // Name from `wsl -l -q`. "Ubuntu" is an example, not a requirement.
+  "wsl_distro": "Ubuntu",
+
+  // Absolute path inside that distro, on its own ext4 disk.
+  // Not /mnt/c, not /mnt/d, not a Windows drive letter.
+  "model_source": "/path/to/RadixArk-Qwen3.8-Flash-Next-NVFP4",
+
+  // Directory created by prepare_ple_nvme.py. Same disk rule.
+  "model_prepared": "/path/to/flash-next-ple",
+
+  // Writable cache and NIXL directory. Same disk rule. Created if missing.
+  "data_dir": "/path/to/pennyroyal-data",
+
+  // Published on 127.0.0.1 only. The server has no API key.
+  "host_port": 30021,
+
+  "container_name": "flash-next-pennyroyal",
+
+  // Used only when docker is not already running. One dockerd per distro.
+  "dockerd_task": "Pennyroyal-dockerd"
+}

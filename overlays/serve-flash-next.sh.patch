@@ -1,0 +1,73 @@
+--- upstream/configs/pennyroyal/serve-flash-next.sh
++++ local/configs/pennyroyal/serve-flash-next.sh
+@@ -22,7 +22,7 @@
+ source "$SCRIPT_DIR/chat-template.sh"
+ source "$SCRIPT_DIR/request-capacity.sh"
+ 
+-CONTEXT_LENGTH=524288
++CONTEXT_LENGTH=250000
+ PAGE_SIZE=64
+ TP_SIZE=1
+ COMPUTE_DTYPE=bfloat16
+@@ -59,7 +59,7 @@
+ export TRITON_CACHE_DIR="$CACHE_BASE/triton" CUDA_CACHE_PATH="$CACHE_BASE/cuda"
+ export FLASHINFER_WORKSPACE_BASE="$CACHE_BASE/flashinfer"
+ export SGLANG_CACHE_DIR="$CACHE_BASE/sglang" SGLANG_JIT_CACHE_DIR="$CACHE_BASE/sglang/jit"
+-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
++export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
+ export SGLANG_NUMA_BIND_V2=false SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1
+ export SGLANG_MAMBA_CONV_DTYPE="$MAMBA_CONV_DTYPE"
+ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}" MKL_NUM_THREADS="${MKL_NUM_THREADS:-4}"
+@@ -70,7 +70,7 @@
+ source "$SCRIPT_DIR/ple-backend.sh"
+ configure_max_total_tokens
+ 
+-TARGET_OVERRIDES='{"text_config":{"rope_parameters":{"mrope_interleaved":true,"mrope_section":[11,11,10],"rope_type":"yarn","rope_theta":10000000,"partial_rotary_factor":0.25,"factor":2.0,"original_max_position_embeddings":262144}}}'
++TARGET_OVERRIDES='{}'
+ SGLANG_REV="$(git -C "$REPO_ROOT" rev-parse --short=10 HEAD)"
+ TORCH_VERSION="$("$PYTHON" -c 'import torch; from sglang.srt.utils import resolve_mm_preprocess_device; resolve_mm_preprocess_device(); print(torch.__version__)')"
+ echo "Media preprocessing: $SGLANG_MM_PREPROCESS_DEVICE ($IMAGE_PROCESSOR_BACKEND); model GPU: cuda:0"
+@@ -79,7 +79,7 @@
+ echo "Deriving NIXL namespace; checkpoint identity hashing may take time..."
+ NIXL_STORAGE="$("$NAMESPACE_HELPER" \
+   --base-root "$NIXL_STORAGE_BASE" \
+-  --slug "qwen3_8_flash_next_524k_nextn_${SGLANG_REV}" \
++  --slug "qwen3_8_flash_next_250k_wsl_nextn_${SGLANG_REV}" \
+   --git-repo "$REPO_ROOT" \
+   --model "target=$TARGET_MODEL" \
+   --field "chat_template_sha256=$CHAT_TEMPLATE_SHA" \
+@@ -98,6 +98,7 @@
+   --field "speculative_draft_quantization=unquant" \
+   --field "gdn_mtp_cache_mode=none" \
+   --field "hicache_io_backend=kernel" \
++  --field "nixl_direct_io=false" \
+   --field "hicache_mem_layout=page_first" \
+   --field "mamba_ssm_dtype=$MAMBA_SSM_DTYPE" \
+   --field "mamba_conv_dtype=$MAMBA_CONV_DTYPE" \
+@@ -124,7 +125,7 @@
+   --served-model-name pennyroyal \
+   --host 0.0.0.0 --port 8001 --tp "$TP_SIZE" \
+   --dtype "$COMPUTE_DTYPE" --quantization modelopt_fp4 --kv-cache-dtype "$KV_DTYPE" \
+-  --mem-fraction-static 0.981 \
++  --mem-fraction-static 0.94 \
+   "${TOKEN_CAP_ARGS[@]}" \
+   --context-length "$CONTEXT_LENGTH" --json-model-override-args "$TARGET_OVERRIDES" \
+   --page-size "$PAGE_SIZE" --max-running-requests "$MAX_RUNNING_REQUESTS" --sleep-on-idle \
+@@ -133,7 +134,7 @@
+   --max-mamba-cache-size "$MAX_MAMBA_CACHE_SIZE" --gdn-mtp-cache-mode none \
+   --linear-attn-decode-backend flashinfer --linear-attn-prefill-backend flashinfer \
+   --mamba-track-interval "$MAMBA_TRACK_INTERVAL" \
+-  --enable-hierarchical-cache --hicache-size 32 --hicache-host-memory-mode cache \
++  --enable-hierarchical-cache --hicache-size 12 --hicache-host-memory-mode cache \
+   --hicache-write-policy write_through --hicache-io-backend kernel \
+   --hicache-mem-layout page_first --hicache-storage-backend nixl \
+   --hicache-storage-prefetch-policy timeout \
+@@ -141,7 +142,7 @@
+   "${PLE_ARGS[@]}" --trust-remote-code \
+   --chat-template "$CHAT_TEMPLATE" --image-processor-backend "$IMAGE_PROCESSOR_BACKEND" \
+   --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
+-  --enable-request-time-stats-logging --enable-metrics \
++  --enable-request-time-stats-logging --enable-metrics --enable-cache-report \
+   --default-chat-template-kwargs '{"enable_thinking":true,"preserve_thinking":true,"reasoning_effort":"medium"}' \
+   --speculative-algorithm NEXTN --speculative-num-steps 3 \
+   --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 \

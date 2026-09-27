@@ -1,0 +1,6 @@
+paths.jsonc
+.envrc
+logs/
+**/__pycache__/
+*.safetensors
+*.bin

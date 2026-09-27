@@ -1,0 +1,6 @@
+use_direct_io = false
+l3_cleaner_enabled = false
+
+[plugin.posix]
+active = true
+use_uring = "true"

@@ -1,0 +1,29 @@
+// Experimental. Not the default. A server booted at context-length 350000 was not run.
+// 262K and 384K prompts passed on a server whose context was 524288, with the same YaRN.
+// 490K timed out with the GPU nearly full. Treat the first start as a test.
+// The checkpoint's original_max_position_embeddings is 262144, so 350000 needs YaRN.
+// This launcher uses rope_type yarn, factor 2.0, original 262144. factor 2.0 covers up to 524288.
+{
+  "description": "Experimental 350000 context via YaRN factor 2. Not separately boot-tested.",
+
+  "image": "ghcr.io/jpezzulli/sglang-rtxpro6000@sha256:76258532b1c01f7583fbe951f90b80903db931030291db9db4e5a68b28567866",
+
+  "launcher": "serve-flash-next-350k.sh",
+
+  "memory_gib": 28,
+
+  "context": 350000,
+
+  // Decode headroom, same +50032 idea as the 250000 profile's 300032.
+  "max_total_tokens": 400032,
+
+  "max_running_requests": 4,
+
+  "max_mamba_cache_size": 24,
+
+  "penny_build_jobs": 2,
+
+  "served_model_name": "qwen3.8-flash-next-pennyroyal",
+
+  "startup_timeout_seconds": 1800
+}

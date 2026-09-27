@@ -1,0 +1,18 @@
+This tree contains modified copies of files from the Pennyroyal container image
+
+    ghcr.io/jpezzulli/sglang-rtxpro6000@sha256:76258532b1c01f7583fbe951f90b80903db931030291db9db4e5a68b28567866
+
+which upstream documents as pennyroyal-v2.5.1 of
+
+    https://github.com/jpezzulli/sglang-rtxpro6000
+
+Those upstream files are Apache-2.0. The copies are:
+
+    overlays/common.py
+    overlays/hicache_nixl.py
+    overlays/serve-flash-next.sh
+    overlays/serve-flash-next-350k.sh
+
+Each of those files carries a short notice that it was changed for WSL2. The matching `.patch` files are the functional diff against the image and do not include that notice header.
+
+The Windows scripts, JSONC profiles, and this notice are part of the WSL2 patch and are distributed under the same Apache-2.0 terms in LICENSE.

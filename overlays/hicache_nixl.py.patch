@@ -1,0 +1,13 @@
+--- upstream/python/sglang/srt/mem_cache/storage/nixl/hicache_nixl.py
++++ local/python/sglang/srt/mem_cache/storage/nixl/hicache_nixl.py
+@@ -505,6 +505,10 @@
+     def _get_hybrid_key_multiplier(
+         self, pool_name: PoolName, host_pool: HostKVCache
+     ) -> int:
++        # Local fix: named sibling states must participate in existence checks,
++        # exactly as in _get_hybrid_zero_copy_buffers write/read descriptors.
++        if hasattr(host_pool, "get_storage_component_names"):
++            return len(host_pool.get_storage_component_names())
+         if pool_name == PoolName.MAMBA:
+             return 1 + len(getattr(host_pool, "conv_buffer", []) or [])
+         if hasattr(host_pool, "v_buffer"):
