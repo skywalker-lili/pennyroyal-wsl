@@ -3,6 +3,7 @@
 # See NOTICE in this repository.
 import logging
 import os
+import threading
 import time
 import uuid
 from dataclasses import dataclass, replace
@@ -23,7 +24,7 @@ from sglang.srt.mem_cache.hicache_storage import (
 )
 from sglang.srt.mem_cache.pool_host import HostKVCache
 from sglang.srt.mem_cache.storage.mmap import alloc_mmap
-from sglang.srt.mem_cache.storage.nixl.nixl_cleaner import HiCacheL3Cleaner
+from sglang.srt.mem_cache.storage.nixl.nixl_cleaner import HiCacheL3Cleaner, _safe_unlink
 
 from .nixl_registry import NixlRegistry
 from .nixl_utils import NixlBackendConfig, NixlBackendSelection, NixlFileManager
@@ -38,6 +39,190 @@ except ImportError as e:
     ) from e
 
 logger = logging.getLogger(__name__)
+
+_GIB = 1024 ** 3
+_QUOTA_MAX_KEY = "l3_cleaner_max_gib"
+_QUOTA_TARGET_KEY = "l3_cleaner_target_gib"
+
+
+def _parse_gib(raw: object, key: str) -> float:
+    """Parse a toml number of GiB. Reject bools; they are ints in Python."""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        raise ValueError(f"{key} must be a positive number of GiB, got {raw!r}")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{key} must be a positive number of GiB, got {raw!r}") from exc
+    if value <= 0 or value != value:
+        raise ValueError(f"{key} must be a positive number of GiB, got {raw!r}")
+    return value
+
+
+def _take_absolute_quota(extra: dict) -> tuple[Optional[int], Optional[int]]:
+    """Pop absolute-quota keys so the NIXL plugin never receives them.
+
+    Returns ``(max_bytes, target_bytes)``. Both are None when the cap is unset.
+    The cap is the sum of cache files the cleaner can delete, not the disk.
+    """
+    max_raw = extra.pop(_QUOTA_MAX_KEY, None)
+    target_raw = extra.pop(_QUOTA_TARGET_KEY, None)
+    if max_raw is None and target_raw is None:
+        return None, None
+    if max_raw is None:
+        raise ValueError(f"{_QUOTA_TARGET_KEY} requires {_QUOTA_MAX_KEY}")
+    max_gib = _parse_gib(max_raw, _QUOTA_MAX_KEY)
+    target_gib = (
+        _parse_gib(target_raw, _QUOTA_TARGET_KEY) if target_raw is not None else max_gib
+    )
+    if target_gib > max_gib:
+        raise ValueError(
+            f"{_QUOTA_TARGET_KEY} ({target_gib}) must be <= {_QUOTA_MAX_KEY} ({max_gib})"
+        )
+    return int(max_gib * _GIB), int(target_gib * _GIB)
+
+
+def _quota_still_hot(
+    *,
+    disk_hot: bool,
+    disk_cool: bool,
+    byte_hot: bool,
+    remaining: int,
+    target_bytes: int,
+) -> bool:
+    """True while either active trigger is still over its stop line."""
+    disk_ok = (not disk_hot) or disk_cool
+    bytes_ok = (not byte_hot) or remaining <= target_bytes
+    return not (disk_ok and bytes_ok)
+
+
+class _AbsoluteQuotaL3Cleaner(HiCacheL3Cleaner):
+    """Filesystem watermarks plus an absolute cap on scanned cache files.
+
+    ``max_bytes`` / ``target_bytes`` are the sum of NIXL bucket files, not
+    ``statvfs`` of the disk. Oldest groups go first. One group is KV, Mamba,
+    and QSA together, same as the upstream cleaner.
+    """
+
+    def __init__(
+        self,
+        storage_dirs: list[str] | str,
+        tp_rank: int,
+        *,
+        high_watermark: float,
+        low_watermark: float,
+        disk_limit: bool,
+        max_bytes: int,
+        target_bytes: int,
+    ) -> None:
+        super().__init__(
+            storage_dirs,
+            tp_rank,
+            high_watermark=high_watermark,
+            low_watermark=low_watermark,
+        )
+        self._disk_limit = disk_limit
+        self._max_bytes = max_bytes
+        self._target_bytes = target_bytes
+
+    def start(self) -> None:
+        if self.tp_rank != 0 or not self.storage_dirs:
+            return
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(
+            target=self._loop, name="hicache-l3-cleaner", daemon=True
+        )
+        self._thread.start()
+        logger.info(
+            "HiCacheL3Cleaner started: dirs=%s absolute_max=%.2fGiB "
+            "absolute_target=%.2fGiB disk_watermark=%s interval=%.1fs",
+            self.storage_dirs,
+            self._max_bytes / _GIB,
+            self._target_bytes / _GIB,
+            "on" if self._disk_limit else "off",
+            self.interval_sec,
+        )
+
+    def _tick(self) -> bool:
+        import concurrent.futures
+
+        initial_pcts = {path: self._disk_usage_pct(path) for path in self.storage_dirs}
+        hot_dirs = (
+            {path for path, pct in initial_pcts.items() if pct >= self.high_watermark}
+            if self._disk_limit
+            else set()
+        )
+        groups: dict = {}
+        for base_dir in self.storage_dirs:
+            self._scan_base_dir(base_dir, groups)
+        total = sum(group.size for group in groups.values())
+        byte_hot = total > self._max_bytes
+        if not hot_dirs and not byte_hot:
+            return False
+
+        if byte_hot:
+            candidates = list(groups.values())
+        else:
+            candidates = [
+                group for group in groups.values() if group.base_dirs & hot_dirs
+            ]
+        ordered = sorted(candidates, key=lambda group: group.mtime)
+        if not ordered:
+            return False
+
+        deleted_groups = 0
+        deleted_files = 0
+        bytes_deleted = 0
+        remaining = total
+        scan_start = time.perf_counter()
+
+        def cooled() -> bool:
+            disk_cool = (not hot_dirs) or all(
+                self._disk_usage_pct(path) < self.low_watermark for path in hot_dirs
+            )
+            return not _quota_still_hot(
+                disk_hot=bool(hot_dirs),
+                disk_cool=disk_cool,
+                byte_hot=byte_hot,
+                remaining=remaining,
+                target_bytes=self._target_bytes,
+            )
+
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=self.unlink_workers,
+            thread_name_prefix="hicache-l3-unlink",
+        ) as pool:
+            idx = 0
+            while idx < len(ordered) and not self._stop.is_set():
+                if cooled():
+                    break
+                batch = ordered[idx : idx + self.recheck_groups]
+                paths = list(self._iter_group_paths(batch))
+                for removed, removed_bytes in pool.map(_safe_unlink, paths):
+                    if removed:
+                        deleted_files += 1
+                        bytes_deleted += removed_bytes
+                        remaining -= removed_bytes
+                deleted_groups += len(batch)
+                idx += len(batch)
+
+        final_pcts = {path: self._disk_usage_pct(path) for path in self.storage_dirs}
+        logger.info(
+            "NIXL L3 cleanup: deleted %d groups / %d files (%.2f GiB) in %.1fs, "
+            "nixl_cache %.2f GiB -> %.2f GiB (cap %.2f / target %.2f), "
+            "initial_hot=%s final=%s",
+            deleted_groups,
+            deleted_files,
+            bytes_deleted / _GIB,
+            time.perf_counter() - scan_start,
+            total / _GIB,
+            max(remaining, 0) / _GIB,
+            self._max_bytes / _GIB,
+            self._target_bytes / _GIB,
+            {path: f"{initial_pcts[path]:.1f}%" for path in hot_dirs},
+            {path: f"{pct:.1f}%" for path, pct in final_pcts.items()},
+        )
+        return True
 
 
 def _parse_storage_dirs(raw: Optional[str]) -> List[str]:
@@ -82,7 +267,14 @@ class HiCacheNixl(HiCacheStorage):
         """Initialize NIXL storage connector."""
 
         # create nixlconfig from the --hicache-storage-backend-extra-config
-        nixlconfig = NixlBackendConfig(storage_config.extra_config)
+        # Absolute-quota keys are ours. Strip them before the plugin sees the dict.
+        extra = storage_config.extra_config
+        if isinstance(extra, dict):
+            extra = dict(extra)
+            max_bytes, target_bytes = _take_absolute_quota(extra)
+        else:
+            max_bytes, target_bytes = None, None
+        nixlconfig = NixlBackendConfig(extra)
 
         # select the NIXL backend plugin from extra_config or environment variable
         plugin = nixlconfig.get_specified_plugin()
@@ -170,20 +362,29 @@ class HiCacheNixl(HiCacheStorage):
             else []
         )
         cleaner_config = nixlconfig.get_l3_cleaner_config()
-        self._l3_cleaner: Optional[HiCacheL3Cleaner] = (
-            HiCacheL3Cleaner(
-                cleanup_dirs,
-                tp_rank,
-                high_watermark=cleaner_config["high_watermark"],
-                low_watermark=cleaner_config["low_watermark"],
-            )
-            if (
-                cleanup_dirs
-                and self.file_manager is not None
-                and cleaner_config["enabled"]
-            )
-            else None
-        )
+        disk_on = bool(cleaner_config["enabled"])
+        quota_on = max_bytes is not None
+        self._l3_cleaner: Optional[HiCacheL3Cleaner] = None
+        if cleanup_dirs and self.file_manager is not None and (disk_on or quota_on):
+            if quota_on:
+                if max_bytes is None or target_bytes is None:
+                    raise RuntimeError("absolute NIXL quota is missing a byte cap")
+                self._l3_cleaner = _AbsoluteQuotaL3Cleaner(
+                    cleanup_dirs,
+                    tp_rank,
+                    high_watermark=cleaner_config["high_watermark"],
+                    low_watermark=cleaner_config["low_watermark"],
+                    disk_limit=disk_on,
+                    max_bytes=max_bytes,
+                    target_bytes=target_bytes,
+                )
+            else:
+                self._l3_cleaner = HiCacheL3Cleaner(
+                    cleanup_dirs,
+                    tp_rank,
+                    high_watermark=cleaner_config["high_watermark"],
+                    low_watermark=cleaner_config["low_watermark"],
+                )
         if self._l3_cleaner is not None:
             self._l3_cleaner.start()
 
