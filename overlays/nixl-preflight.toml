@@ -1,11 +1,10 @@
 use_direct_io = false
 l3_cleaner_enabled = false
 # Absolute cap on NIXL cache files, in GiB (1024^3). Not a percent of the disk.
-# Counts bucket files the cleaner can delete. Off until max is set.
-# target is optional; omit it to trim back to max. target must be <= max.
-# A container restart is required. Example:
-# l3_cleaner_max_gib = 40
-# l3_cleaner_target_gib = 32
+# Counts bucket files the cleaner can delete.
+# target defaults to max / 2 when omitted. target must be <= max.
+# A container restart is required.
+l3_cleaner_max_gib = 32
 
 [plugin.posix]
 active = true

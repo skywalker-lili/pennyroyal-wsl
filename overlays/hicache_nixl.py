@@ -72,7 +72,9 @@ def _take_absolute_quota(extra: dict) -> tuple[Optional[int], Optional[int]]:
         raise ValueError(f"{_QUOTA_TARGET_KEY} requires {_QUOTA_MAX_KEY}")
     max_gib = _parse_gib(max_raw, _QUOTA_MAX_KEY)
     target_gib = (
-        _parse_gib(target_raw, _QUOTA_TARGET_KEY) if target_raw is not None else max_gib
+        _parse_gib(target_raw, _QUOTA_TARGET_KEY)
+        if target_raw is not None
+        else (max_gib / 2.0)
     )
     if target_gib > max_gib:
         raise ValueError(

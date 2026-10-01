@@ -122,7 +122,7 @@ This stops the model container and drops the WSL page cache. It does not stop do
 ## What the patch changes
 
 - `overlays/common.py` — WSL's default pinned allocator broke the Mamba kernel. This file is the torch-pinned allocator that was mounted over the image copy.
-- `overlays/hicache_nixl.py` — NIXL component-count fix, mounted over the image copy. Also reads `l3_cleaner_max_gib` and optional `l3_cleaner_target_gib` from the toml and strips them before the NIXL plugin sees the dict. Those cap the sum of NIXL cache files in GiB, not the whole disk. They are off until set. A container restart is required.
+- `overlays/hicache_nixl.py` — NIXL component-count fix, mounted over the image copy. Also reads `l3_cleaner_max_gib` and optional `l3_cleaner_target_gib` (defaults to half of max when omitted) from the toml and strips them before the NIXL plugin sees the dict. Those cap the sum of NIXL cache files in GiB, not the whole disk. A container restart is required.
 - `overlays/serve-flash-next.sh` — the 250,000-token launcher used for the run above. HiCache is 12 GiB, not upstream's 32 GiB.
 - `overlays/nixl-preflight.toml` — buffered POSIX IO. O_DIRECT was the slower path on this setup.
 - `windows/run-dockerd-hidden.vbs` — dockerd owned by Task Scheduler, no console window.
